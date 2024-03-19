@@ -1,0 +1,263 @@
+---
+title: "midterm project"
+author: "Yixiao Sun"
+date: "2024-03-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(summarytools)
+library(leaps)
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+library(ISLR) 
+library(glmnet) 
+library(caret) 
+library(tidymodels)
+library(plotmo)
+library(caret) 
+library(tidymodels) 
+library(splines)
+library(mgcv)
+library(pdp)
+library(earth) 
+library(tidyverse) 
+library(ggplot2) 
+library(bayesQR)
+```
+
+Exploratory analysis and data visualization
+```{r}
+load("recovery.RData")
+st_options(plain.ascii = TRUE,
+           style = "rmarkdown",
+           dfSummary.silent = TRUE,
+           footnote = NA,
+           subtitle.emphasis = FALSE)
+dfSummary(dat[,-1])
+summary(dat)
+
+columns_to_convert <- c("gender", "race", "smoking", "hypertension", "diabetes", "vaccine", "severity")
+
+dat$study <- as.character(dat$study)
+unique(dat$study)
+# Convert selected factor variables to numeric using mutate
+dat <- dat %>%
+  mutate(across(all_of(columns_to_convert), as.numeric)) %>%
+  mutate(study = case_when(
+    study == "A" ~ 1,
+    study == "B" ~ 2
+  ))
+
+numeric_data <- dat[, c("age", "gender", "race", "smoking", "height", "weight", "bmi", "hypertension", "diabetes", "SBP", "LDL", "vaccine", "severity", "study", "recovery_time")]
+
+# Compute correlation matrix
+correlation_matrix <- cor(numeric_data)
+correlation_df <- as.data.frame(as.table(correlation_matrix))
+names(correlation_df) <- c("Var1", "Var2", "Correlation")
+
+ggplot(correlation_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                       midpoint = 0, limits = c(-1, 1), 
+                       name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+```{r}
+dat_subset <- dat %>%
+  select(-id, -height, -weight, -hypertension, -age)
+numeric_data <- dat_subset[, c("gender", "race", "smoking", "bmi", "diabetes", "SBP", "LDL", "vaccine", "severity", "study", "recovery_time")]
+
+# Compute correlation matrix
+correlation_matrix <- cor(numeric_data)
+correlation_df <- as.data.frame(as.table(correlation_matrix))
+names(correlation_df) <- c("Var1", "Var2", "Correlation")
+
+ggplot(correlation_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                       midpoint = 0, limits = c(-1, 1), 
+                       name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+Model training
+```{r}
+ctrl1 <- trainControl(method = "cv", number = 10)
+set.seed(111)
+data <- 
+  dat_subset %>%
+  mutate(gender = as.factor(gender),
+         race = as.factor(race),
+         smoking = as.factor(smoking),
+         diabetes = as.factor(diabetes),
+         vaccine = as.factor(vaccine),
+         severity = as.factor(severity),
+         study = as.factor(study))
+data_split <- initial_split(data, prop = 0.8)
+# Extract the training and test data
+training_data <- training(data_split) 
+testing_data <- testing(data_split)
+```
+
+Ridge regression
+```{r}
+set.seed(111)
+ridge.fit <- train(recovery_time ~ . ,
+                   data = training_data,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 0,
+                       lambda = exp(seq(10, -5, length=100))),
+                   trControl = ctrl1) 
+plot(ridge.fit, xTrans = log)
+ridge.fit$bestTune
+coef(ridge.fit$finalModel, s = ridge.fit$bestTune$lambda)
+ridge.pred <- predict(ridge.fit, newdata = testing_data)
+# test error
+mean((ridge.pred - testing_data[, "recovery_time"])^2)
+```
+
+
+```{r}
+set.seed(111)
+lasso.fit <- train(recovery_time ~ .,
+                   data = training_data,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 1,
+                                          lambda = exp(seq(3, -3, length = 100))),
+                   trControl = ctrl1)
+plot(lasso.fit, xTrans = log)
+lasso.fit$bestTune
+coef(lasso.fit$finalModel, lasso.fit$bestTune$lambda)
+lasso.pred <- predict(lasso.fit, newdata = testing_data)
+# test error
+mean((lasso.pred - testing_data[, "recovery_time"])^2)
+```
+
+Elastic Net
+```{r}
+set.seed(111)
+enet.fit <- train(recovery_time ~ .,
+                  data = training_data,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                         lambda = exp(seq(3, -3, length = 100))),
+                  trControl = ctrl1)
+enet.fit$bestTune
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+              superpose.line = list(col = myCol)) 
+plot(enet.fit, par.settings = myPar)
+coef(enet.fit$finalModel, enet.fit$bestTune$lambda)
+enet.pred <- predict(enet.fit, newdata = testing_data)
+# test error
+mean((enet.pred - testing_data[, "recovery_time"])^2)
+```
+Comparison
+```{r}
+set.seed(111)
+lm.fit <- train(recovery_time ~ .,
+                data = training_data,
+                method = "lm",
+                trControl = ctrl1)
+resamp <- resamples(list(enet = enet.fit, lasso = lasso.fit, ridge = ridge.fit, lm = lm.fit))
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+PCR
+```{r}
+# show information about the model
+modelLookup("pcr")
+modelLookup("pls")
+
+x <- model.matrix(recovery_time ~ ., training_data)[, -1]
+y <- training_data$recovery_time
+# test data
+x2 <- model.matrix(recovery_time ~ .,testing_data)[, -1] 
+y2 <- testing_data$recovery_time
+
+set.seed(111)
+pcr.fit <- train(recovery_time ~ .,
+                 data = training_data,
+                 method = "pcr",
+                 tuneGrid = data.frame(ncomp = 1:11), 
+                 trControl = ctrl1,
+                 preProcess = c("center", "scale"))
+pcr.fit$bestTune
+predy2.pcr2 <- predict(pcr.fit, newdata = testing_data) 
+mean((y2 - predy2.pcr2)^2)
+
+ggplot(pcr.fit, highlight = TRUE) + theme_bw()
+```
+
+PLS
+```{r}
+set.seed(111)
+pls.fit <- train(recovery_time ~ .,
+                 data = training_data,
+                 method = "pls",
+                 tuneGrid = data.frame(ncomp = 1:11), 
+                 trControl = ctrl1,
+                 preProcess = c("center", "scale"))
+predy2.pls2 <- predict(pls.fit, newdata = testing_data) 
+mean((y2 - predy2.pls2)^2)
+
+pls.fit$bestTune
+ggplot(pls.fit, highlight = TRUE)
+```
+
+```{r}
+resamp <- resamples(list(enet = enet.fit, lasso = lasso.fit, ridge = ridge.fit, lm = lm.fit,pls = pls.fit, pcr = pcr.fit))
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+
+# MARS
+```{r}
+mars_grid <- expand.grid(degree = 1:3, nprune = 2:15)
+set.seed(111)
+
+x3<-model.matrix(recovery_time ~ ., data)[,-1]
+y3<-data$recovery_time
+mars.fit <- train(recovery_time ~ .,data = training_data,
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1)
+ggplot(mars.fit)
+mars.fit$bestTune
+mars.pred <- predict(mars.fit, newdata = testing_data)
+mean((mars.pred - testing_data[, "recovery_time"])^2)
+```
+
+
+```{r}
+set.seed(111)
+gam.fit <- train(recovery_time ~ .,
+                 data = training_data,
+                 method = "gam",
+                 trControl = ctrl1)
+gam.fit$bestTune
+gam.fit$finalModel
+gam_pred <- predict(gam.fit, newdata = testing_data) 
+mean((gam_pred - testing_data$recovery_time)^2)
+```
+
+```{r}
+resamp <- resamples(list(enet = enet.fit, lasso = lasso.fit, ridge = ridge.fit, lm = lm.fit,pls = pls.fit, pcr = pcr.fit, mars = mars.fit, gam = gam.fit))
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+
