@@ -152,7 +152,7 @@ anova(fit1, fit2, fit3, fit4, fit5)
 Ridge regression
 ```{r}
 set.seed(1)
-ridge.fit <- train(recovery_time ~ . ,
+ridge.fit <- train(recovery_time ~ . -bmi +poly(bmi,4),
                    data = training_data,
                    method = "glmnet",
                    tuneGrid = expand.grid(alpha = 0,

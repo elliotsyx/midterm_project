@@ -1,0 +1,233 @@
+---
+title: "midterm project"
+author: "Chrissy Chen"
+date: "2024-03-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(tidyverse)
+library(summarytools)
+library(leaps)
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+library(ISLR) 
+library(glmnet) 
+library(caret) 
+library(tidymodels)
+library(plotmo)
+library(earth)
+```
+
+Exploratory analysis and data visualization
+```{r}
+load("recovery.RData")
+st_options(plain.ascii = TRUE,
+           style = "rmarkdown",
+           dfSummary.silent = TRUE,
+           footnote = NA,
+           subtitle.emphasis = FALSE)
+dfSummary(dat[,-1])
+
+columns_to_convert <- c("gender", "race", "smoking", "hypertension", "diabetes", "vaccine", "severity")
+
+dat$study <- as.character(dat$study)
+unique(dat$study)
+# Convert selected factor variables to numeric using mutate
+dat <- dat %>%
+  mutate(across(all_of(columns_to_convert), as.numeric)) %>%
+  mutate(study = case_when(
+    study == "A" ~ 1,
+    study == "B" ~ 2
+  ))
+
+numeric_data <- dat[, c("age", "gender", "race", "smoking", "height", "weight", "bmi", "hypertension", "diabetes", "SBP", "LDL", "vaccine", "severity", "study", "recovery_time")]
+
+# Compute correlation matrix
+correlation_matrix <- cor(numeric_data)
+correlation_df <- as.data.frame(as.table(correlation_matrix))
+names(correlation_df) <- c("Var1", "Var2", "Correlation")
+
+ggplot(correlation_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                       midpoint = 0, limits = c(-1, 1), 
+                       name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+```{r}
+dat_subset <- dat %>%
+  select(-id, -height, -weight, -hypertension, -study)
+numeric_data <- dat_subset[, c("age", "gender", "race", "smoking", "bmi", "diabetes", "SBP", "LDL", "vaccine", "severity", "recovery_time")]
+
+# Compute correlation matrix
+correlation_matrix <- cor(numeric_data)
+correlation_df <- as.data.frame(as.table(correlation_matrix))
+names(correlation_df) <- c("Var1", "Var2", "Correlation")
+
+ggplot(correlation_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                       midpoint = 0, limits = c(-1, 1), 
+                       name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+
+Model training
+```{r}
+data <- 
+  dat_subset %>%
+  mutate(gender = as.factor(gender),
+         race = as.factor(race),
+         smoking = as.factor(smoking),
+         diabetes = as.factor(diabetes),
+         vaccine = as.factor(vaccine),
+         severity = as.factor(severity))
+```
+
+
+Relation between predictors and response
+```{r}
+x <- model.matrix(recovery_time ~ ., data)[, -1] # vector of response
+y <- data$recovery_time
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5) 
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1) 
+theme1$plot.line$lwd <- 2 
+theme1$strip.background$col <- rgb(.0, .2, .6, .2) 
+trellis.par.set(theme1)
+# svi and gleason were not included in the plot (they take discrete values)
+featurePlot(x[, c("age", "bmi", "SBP", "LDL")], y, plot = "scatter", labels = c("", "Y"), type = c("p"), layout = c(4, 1))
+```
+
+bmi polynomial check
+```{r}
+fit1 <- lm(recovery_time ~ bmi, data = data)
+fit2 <- lm(recovery_time ~ poly(bmi,2), data = data) 
+fit3 <- lm(recovery_time ~ poly(bmi,3), data = data) 
+fit4 <- lm(recovery_time ~ poly(bmi,4), data = data) 
+fit5 <- lm(recovery_time ~ poly(bmi,5), data = data) 
+anova(fit1, fit2, fit3, fit4, fit5)
+```
+
+Final data
+```{r}
+set.seed(3)
+data_split <- initial_split(data, prop = 0.8)
+# Extract the training and test data
+training_data <- training(data_split) 
+testing_data <- testing(data_split)
+
+ctrl1 <- trainControl(method = "cv", number = 10)
+```
+
+
+Elastic Net
+```{r}
+set.seed(3)
+enet.fit = train(recovery_time ~ .-bmi+poly(bmi,4),
+                   data = training_data,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = seq(0, 1, length = 17),
+                                          lambda = exp(seq(6, -5, length = 100))),
+                   trControl = ctrl1)
+plot(enet.fit, xTrans = log)
+enet_pred <- predict(enet.fit, newdata = testing_data) # test error
+mean((testing_data$recovery_time - enet_pred)^2)
+```
+
+
+PCR
+```{r}
+set.seed(3)
+pcr.fit <- train(recovery_time ~.-bmi+poly(bmi,4),
+                 data = training_data,
+                 method = "pcr",
+                 tuneGrid = data.frame(ncomp = 1:17), 
+                 trControl = ctrl1,
+                 preProcess = c("center", "scale"))
+pcr.fit$bestTune
+pcr_pred <- predict(pcr.fit, newdata = testing_data) 
+mean((testing_data$recovery_time - pcr_pred)^2)
+
+ggplot(pcr.fit, highlight = TRUE) + theme_bw()
+```
+
+PLS
+```{r}
+set.seed(3)
+pls.fit <- train(recovery_time ~.-bmi+poly(bmi,4),
+                 data = training_data,
+                 method = "pls",
+                 tuneGrid = data.frame(ncomp = 1:16), 
+                 trControl = ctrl1,
+                 preProcess = c("center", "scale"))
+pls_pred <- predict(pls.fit, newdata = testing_data) 
+mean((testing_data$recovery_time - pls_pred)^2)
+
+pls.fit$bestTune
+ggplot(pls.fit, highlight = TRUE)
+```
+
+
+MARS
+```{r}
+mars_grid <- expand.grid(degree = 1:3, 
+                         nprune = 1:20)
+set.seed(3)
+mars.fit <- train(recovery_time ~.-bmi+poly(bmi,4),
+                  data = training_data,
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1)
+ggplot(mars.fit)
+mars.fit$bestTune
+coef(mars.fit$finalModel)
+# Test Error
+mars_pred <- predict(mars.fit, newdata = testing_data) 
+mean((mars_pred - testing_data$recovery_time)^2)
+```
+
+GAM
+```{r}
+set.seed(3)
+# Train GAM model
+poly_bmi <- poly(training_data$bmi, degree = 4)
+
+# Fit GAM with tensor product smooth term for polynomial terms
+gam.fit <- train(recovery_time ~ . ,
+                 data = training_data,
+                 method = "gam",
+                 trControl = ctrl1)
+gam.fit$bestTune
+gam.fit$finalModel
+gam_pred <- predict(gam.fit, newdata = testing_data)
+mean((gam_pred - testing_data$recovery_time)^2)
+```
+
+Model comparison
+```{r}
+set.seed(3)
+lm.fit <- train(recovery_time ~.-bmi+poly(bmi,4),
+                data = training_data,
+                method = "lm",
+                trControl = ctrl1)
+resamp <- resamples(list(enet = enet.fit, lm = lm.fit, pls = pls.fit, pcr = pcr.fit, mars = mars.fit, gam=gam.fit))
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+
